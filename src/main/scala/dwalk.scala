@@ -1,26 +1,22 @@
 package compdir
 
-// import java.io.File
 import java.nio.file.{Path, Files, Paths, FileSystems, LinkOption}
 import java.nio.file.attribute.FileTime
 
-object Run extends DObject {
+object Run extends SPath {
   def main(args: Array[String]):Unit = {
     val startPath = if (args.isEmpty) Paths.get("").toAbsolutePath else Paths.get(args(0))
     println(s"checking ${startPath.toString}")
-    def helper:Path=>Unit = { p:Path => 
-      if (isDirectory(p)) dprint(p)
-      println(p.toString)
+
+    def printer: PartialFunction[DObject, Unit] = {
+      case f:File => println(s"File : ${f.name} - ${f.size} - ${f.modifiedTime}")
+      case d:Dir => { println(s"Dir : ${d.path}"); d.walk(printer) }
     }
-    def dprint = walkPath(helper)_
-    dprint(startPath)
-    /* def dprint(p:Path):Unit = {
-      if (Files.isDirectory(p)) walk(p)(dprint)
-        println(p.toString)      
-    } */
+    Dir(startPath).walk(printer)
   }
 }
 
+/* primitive scala functions about Java's newDirectoryStream */
 trait SPath {
   type Ignore = Path => Boolean
 
@@ -41,44 +37,53 @@ trait SPath {
     def next = it.next
   }
 
-  implicit def defaultIgnore:Ignore = { f => f.toString.apply(0) == '.' || Files.isHidden(f) }
+  implicit def defaultIgnore:Ignore = 
+      { f => f.toString.apply(0) == '.' || Files.isHidden(f) }
 
-  def walkPath(code:Path=>Unit)(p:Path)(implicit ignore:Ignore) = {
-    path2Iterator(p).filter(!ignore(_)).foreach(code(_))
-  }
-
+  def walkPath(code:Path=>Unit)(p:Path)(implicit ignore:Ignore) =
+      path2Iterator(p).filter(!ignore(_)).foreach(code(_))
 }
 
 trait DObject extends SPath {
+  /* name, directory, checksum */
   type DInfo = Tuple3[String, Boolean, Long]
 
-  def walk(code:Path=>Unit)(implicit p:Path, ignore:Ignore) = {
-    path2Iterator(p).filter(!ignore(_)).foreach(code(_))
-  }
+  val path:Path
+  implicit def path2DObject(p:Path):DObject = 
+      if (Files.isDirectory(p)) Dir(p)
+      else File(p)
+  implicit def dObject2Path(d:DObject):Path = d.path
 
-  def size(implicit p:Path) = Files.size(p)
+  def pseudochecksum(implicit p:Path):Long
 
-  def isDirectory(implicit p:Path) = Files.isDirectory(p)
+  /* don't follow symbolic link, if don't want, override it to true */
+  val followLink:Boolean = false    
 
-  def isHidden(implicit p:Path) = Files.isHidden(p)
+  def size = Files.size(this.path)
 
-  def name(implicit p:Path) = p.getFileName.toString
+  def isDirectory = Files.isDirectory(this.path)
 
-  def modifiedTime(implicit p:Path) = Files.getLastModifiedTime(p)
+  def isHidden = Files.isHidden(this.path)
+
+  def name = this.path.getFileName.toString
+
+  def modifiedTime = 
+      if (followLink) Files.getLastModifiedTime(this.path)
+      else Files.getLastModifiedTime(this.path, LinkOption.NOFOLLOW_LINKS)
 
   def nameSum(name:String):Long = name.foldLeft(0)((acc, c) => acc + c)
 }
 
-case class File(path:Path) extends DObject{
-  assert(!isDirectory(path))
-  implicit val self = path
-
-  def pseudochecksum = nameSum(name) + size + modifiedTime.toMillis
+case class File(path:Path) extends DObject {
+  assert(!Files.isDirectory(path))
+  def pseudochecksum(implicit p:Path):Long = 
+      nameSum(p.name) + p.size + p.modifiedTime.toMillis
 }
 
-class Directory(val path:Path) extends DObject {
+case class Dir(path:Path) extends DObject {
   assert(Files.isDirectory(path) && path.isAbsolute)
-  implicit val self = path
+  def pseudochecksum(implicit p:Path):Long = nameSum(p.name)
 
-  def pseudochecksum = nameSum(name)
+  def walk(code:PartialFunction[DObject,Unit])(implicit ignore:Ignore) = 
+    path2Iterator(path).filter(!ignore(_)).foreach(p => code(p))
 }
