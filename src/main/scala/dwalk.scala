@@ -1,52 +1,84 @@
 package compdir
 
 // import java.io.File
-import java.nio.file.{Path, Files, Paths, FileSystems}
+import java.nio.file.{Path, Files, Paths, FileSystems, LinkOption}
 import java.nio.file.attribute.FileTime
 
-object Run {
-  def main(args: Array[String]) = {
+object Run extends DObject {
+  def main(args: Array[String]):Unit = {
     val startPath = if (args.isEmpty) Paths.get("").toAbsolutePath else Paths.get(args(0))
     println(s"checking ${startPath.toString}")
-    new Directory(startPath)
+    def helper:Path=>Unit = { p:Path => 
+      if (isDirectory(p)) dprint(p)
+      println(p.toString)
+    }
+    def dprint = walkPath(helper)_
+    dprint(startPath)
+    /* def dprint(p:Path):Unit = {
+      if (Files.isDirectory(p)) walk(p)(dprint)
+        println(p.toString)      
+    } */
   }
 }
 
-trait DObject {
-  val name:String
-  type FileInfo = (String, Long)
+trait SPath {
+  type Ignore = Path => Boolean
 
-  def pseudochecksum
-  def nameSum:Long = name.foldLeft(0)((acc, c) => acc + c)
+  implicit def path2Iterator(p:Path) = new Iterator[Path] {
+    private var stream = Files.newDirectoryStream(p)
+    private var it = stream.iterator
+    private var finished = false
+    def hasNext:Boolean = { 
+      if (finished) {
+        stream = Files.newDirectoryStream(p)
+        it = stream.iterator
+        finished = false
+      }
+      val r = it.hasNext
+      if (r == false) { finished = true; stream.close }
+      r
+    }
+    def next = it.next
+  }
+
+  implicit def defaultIgnore:Ignore = { f => f.toString.apply(0) == '.' || Files.isHidden(f) }
+
+  def walkPath(code:Path=>Unit)(p:Path)(implicit ignore:Ignore) = {
+    path2Iterator(p).filter(!ignore(_)).foreach(code(_))
+  }
+
 }
 
-class File(val name:String, val size:Long, val mTime:FileTime) extends DObject{
-  def pseudochecksum = nameSum + size + mTime.toMillis
+trait DObject extends SPath {
+  type DInfo = Tuple3[String, Boolean, Long]
+
+  def walk(code:Path=>Unit)(implicit p:Path, ignore:Ignore) = {
+    path2Iterator(p).filter(!ignore(_)).foreach(code(_))
+  }
+
+  def size(implicit p:Path) = Files.size(p)
+
+  def isDirectory(implicit p:Path) = Files.isDirectory(p)
+
+  def isHidden(implicit p:Path) = Files.isHidden(p)
+
+  def name(implicit p:Path) = p.getFileName.toString
+
+  def modifiedTime(implicit p:Path) = Files.getLastModifiedTime(p)
+
+  def nameSum(name:String):Long = name.foldLeft(0)((acc, c) => acc + c)
+}
+
+case class File(path:Path) extends DObject{
+  assert(!isDirectory(path))
+  implicit val self = path
+
+  def pseudochecksum = nameSum(name) + size + modifiedTime.toMillis
 }
 
 class Directory(val path:Path) extends DObject {
-  assert(path.isAbsolute)
+  assert(Files.isDirectory(path) && path.isAbsolute)
+  implicit val self = path
 
-  var files = Set[FileInfo]()
-  val name = path.getFileName.toString
-  def pseudochecksum = nameSum
-  def walk = {
-    val stream = Files.newDirectoryStream(path)
-    val it = stream.iterator
-    while (it.hasNext) {
-      val nObj = it.next
-      if (!Directory.ignore(nObj)) {
-        if (Files.isDirectory(nObj)) new Directory(nObj)
-        println(nObj.toString)
-      }
-    }
-    stream.close
-  }
-  walk
-}
-
-object Directory {
-  def ignore:Path => Boolean = defaultIgnore
-
-  def defaultIgnore(f:Path) = f.toString.apply(0) == '.' || Files.isHidden(f)
+  def pseudochecksum = nameSum(name)
 }
