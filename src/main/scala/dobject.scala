@@ -29,18 +29,10 @@ trait SPath {
       { f => f.toString.apply(0) == '.' || Files.isHidden(f) }
 
   def walkPath(code:Path=>Unit)(p:Path)(implicit ignore:Ignore) =
-      path2Iterator(p).filter(!ignore(_)).foreach(code(_))
+      path2Iterator(p).withFilter(!ignore(_)).foreach(code(_))
 }
 
-trait DObject extends SPath {
-  val path:Path
-  implicit def path2DObject(p:Path):DObject = 
-      if (Files.isDirectory(p)) Dir(p)
-      else File(p)
-  implicit def dObject2Path(d:DObject):Path = d.path
-
-  def pseudochecksum():Long
-
+class DObject(val path:Path) extends SPath {
   /* don't follow symbolic link, if don't want, override it to true */
   val followLink:Boolean = false    
 
@@ -57,37 +49,49 @@ trait DObject extends SPath {
       else Files.getLastModifiedTime(this.path, LinkOption.NOFOLLOW_LINKS)
 
   def nameSum(name:String):Long = name.foldLeft(0)((acc, c) => acc << 1 + c)
+
+  def pseudochecksum:Long = nameSum(name)
 }
 
-case class File(path:Path) extends DObject {
+class File(override val path:Path) extends DObject(path) {
   assert(!Files.isDirectory(path))
-  def pseudochecksum:Long = 
+  override def pseudochecksum:Long = 
       nameSum(name) + size + modifiedTime.toMillis
 }
 
-case class Dir(path:Path) extends DObject {
+class Dir(override val path:Path, children:Tuple2[Iterator[Dir], Iterator[File]]) extends DObject(path) {
   assert(Files.isDirectory(path) && path.isAbsolute)
-  def pseudochecksum:Long = nameSum(name)
-
-  def walk(code:PartialFunction[DObject,Unit])(implicit ignore:Ignore) = 
-    path2Iterator(path).filter(!ignore(_)).foreach(p => code(p))
+  val (dirs, files) = children
+  override def pseudochecksum:Long = nameSum(name)
 }
 
 object Dir extends SPath {
-	def walk(path:Path)(code:PartialFunction[DObject, Unit])(implicit ignore:Ignore) = {
-		Dir(path.toAbsolutePath).walk(code)(ignore)
+	/* 
+	 * calls code with each file or directory recursively 
+	 */
+	def process(path:Path)(code:DObject => Unit)(implicit ignore:Ignore):Unit = {
+		path2Iterator(path).withFilter(!ignore(_)).foreach(p => { 
+			code(new DObject(p));
+			if (Files.isDirectory(p)) process(p)(code)(ignore)
+		})
 	}
 
-	def process(path:Path)(code:(Dir, Iterator[File]) => Unit)(implicit ignore:Ignore) = {
-		def helper(d:Dir):Unit = {
+	/* 
+	 * returns Dir object which contains subdirectory / file informations
+	 */
+	def apply(path:Path)(implicit ignore:Ignore):Dir = {
+		assert(Files.isDirectory(path))
+		def helper(p:Path):(Iterator[Dir], Iterator[File]) = {
+			val ds = ListBuffer[Dir]()
 			val fs = ListBuffer[File]()
-			path2Iterator(d.path).withFilter(!ignore(_)).foreach(p =>
-				if (Files.isDirectory(p)) helper(Dir(p))
-				else fs += File(p))
-			code(d, fs.toIterator)
+			path2Iterator(p).withFilter(!ignore(_)).foreach(o =>
+				if (Files.isDirectory(o)) {
+					ds += new Dir(o, helper(o))
+				} else {
+					fs += new File(o)
+				})
+			(ds.toIterator, fs.toIterator)
 		}
-		helper(Dir(path.toAbsolutePath))
+		new Dir(path, helper(path))
 	}
-
-	def summary(path:Path)(implicit ignore:Ignore) = ???
 }

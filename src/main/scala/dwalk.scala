@@ -6,27 +6,28 @@ import java.nio.file.{Path, Files, Paths, FileSystems, LinkOption}
 object Run extends SPath {
   def main(args: Array[String]):Unit = {
     val startPath = if (args.isEmpty) "" else args(0)
-    println(s"checking ${startPath}")
-    // walk(startPath)
+    println(s"method process($startPath)")
+    process(startPath)
+    println(s"method tree($startPath)")
     tree(startPath)
   }
 
-  def walk(path:String) = {
-    def printer: PartialFunction[DObject, Unit] = {
-      case f:File => println(f"File : ${f.name} - ${f.size}(${f.pseudochecksum}%x)- ${f.modifiedTime}")
-      case d:Dir => { println(s"Dir : ${d.path}"); d.walk(printer) }
-    }
-    Dir.walk(path)(printer)
+  def process(path:String) = {
+    def printer(o:DObject):Unit = 
+      if (o.isDirectory) { println(s"Dir : ${o.path}")  }
+      else println(f"File : ${o.name} - ${o.size}(${o.pseudochecksum}%x)- ${o.modifiedTime}")
+    Dir.process(path)(printer)
   }
 
   def tree(path:Path) = {
+    val r = Dir(path.toAbsolutePath)
     val iniCompCount = path.toAbsolutePath.getNameCount
     val compIndent = 3
-    def printer(dir:Dir, files:Iterator[File]) = {
-      val curCompCount = dir.path.getNameCount
-      val fsizeSum = files.foldLeft(0L)((acc, f) => acc + f.size)
-      println(" " * (curCompCount - iniCompCount) * compIndent + dir.name + " : " + fsizeSum)
+    def helper(d:Dir):Unit = {
+      val curCompCount = d.path.getNameCount
+      println(" " * (curCompCount - iniCompCount) * compIndent + d.name + " " + d.files.map(_.size).sum)
+      d.dirs.foreach(helper(_))
     }
-    Dir.process(path)(printer)
+    helper(r)
   }
 }
